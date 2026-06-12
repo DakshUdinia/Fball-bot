@@ -31,7 +31,7 @@ from .database import (
 )
 from .live_data import LiveMatchService, MatchState
 from .discovery import FootballMarketDiscovery, FootballMarket
-from .models import FootballProbabilityModel
+from .models import FootballReversionModel
 from .scalping import ScalpingStrategy, TradeSignal, ActiveScalp
 from .risk import PortfolioRisk
 from .gemini import GeminiScout
@@ -44,11 +44,11 @@ class FballTradingBot:
     """Autonomous loop: discover → poll → model → scalp → execute."""
 
     # Min orderbook depth ($) required to attempt a FOK scalp
-    MIN_LIQUIDITY_USD = 50
+    MIN_LIQUIDITY_USD = 20  # Lowered from 50: $20 depth is sufficient for a $3 trade
 
     def __init__(self) -> None:
         self._live = LiveMatchService()
-        self._model = FootballProbabilityModel()
+        self._model = FootballReversionModel()
         self._scalping = ScalpingStrategy(self._model)
         self._risk = PortfolioRisk(
             max_per_trade_usd=RISK_MAX_PER_TRADE_USD,
@@ -340,9 +340,10 @@ class FballTradingBot:
         fid = summary.fixture_id
         events = await self._live.poll_new_events(fid)
 
-        # Handle 429 by noting it happened
-        if not events and not await self._live.get_match_events(fid):
-            self._rate_limit_backoff = FOOTBALL_CHECK_INTERVAL * 2
+        # Handle 429 only on actual rate-limit response (not empty event lists)
+        if self._live.last_status_code == 429:
+            self._rate_limit_backoff = FOOTBALL_CHECK_INTERVAL * 3
+            logger.warning("Rate limited by API-Football, backing off %ds", self._rate_limit_backoff)
 
         market = self._discovery.get_market(fid) if self._discovery else None
         if not market and self._discovery:
@@ -403,12 +404,13 @@ class FballTradingBot:
 
     async def _execute_signal(self, fid: int, sig: TradeSignal, cur_price: float) -> None:
         if sig.type == "entry":
-            # Gemini gate
+            # Gemini is ADVISORY ONLY — adjusts size, NEVER fully blocks a trade.
+            # Speed is our edge: stale veto or slow AI must not miss a spike.
             scout_mult = self._gemini.get_adjustment(fid)
             scout_reason = self._gemini.get_reason(fid)
-            if scout_mult == 0.0:
-                logger.warning("🧠 Gemini veto: %s (fixture %d)", scout_reason, fid)
-                return
+            scout_mult = max(0.5, scout_mult)  # Floor at 0.5x, never full veto
+            if scout_reason:
+                logger.debug("Gemini advisory: mult=%.1f %s", scout_mult, scout_reason)
 
             # Fix #6: Liquidity check
             if self._gamma and sig.token_id:
@@ -488,11 +490,20 @@ class FballTradingBot:
                     self._notifier.error(f"Entry failed: {e}")
 
         elif sig.type == "exit" and sig.trade_id:
-            scalp = self._scalping.register_exit(sig.trade_id)
+            # For partial exits, don't remove from active scalps
+            is_partial = "partial" in sig.reason
+            if is_partial:
+                scalp = self._scalping._active.get(sig.trade_id)
+            else:
+                scalp = self._scalping.register_exit(sig.trade_id)
             if not scalp:
                 return
-            pnl = (scalp.entry_price - sig.price) * sig.size if scalp.side == "SELL" \
-                else (sig.price - scalp.entry_price) * sig.size
+            # Fix: PnL = qty_shares * price_move (not dollar_amount * price_move)
+            qty = sig.size / scalp.entry_price if scalp.entry_price > 0 else sig.size
+            if scalp.side == "SELL":
+                pnl = qty * (scalp.entry_price - sig.price)
+            else:
+                pnl = qty * (sig.price - scalp.entry_price)
             close_trade(sig.trade_id, sig.price, pnl, sig.reason)
             info = self._risk.record_trade(pnl, scalp.entry_price)
 

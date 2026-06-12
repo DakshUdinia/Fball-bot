@@ -1,4 +1,4 @@
-"""Scalping strategy — entry/exit rules for goal spike & red card scalping."""
+"""Scalping strategy — entry/exit rules for goals, cards, and VAR."""
 
 from __future__ import annotations
 
@@ -8,19 +8,27 @@ from dataclasses import dataclass
 from typing import Any
 
 from .live_data import MatchEvent, MatchState
-from .models import FootballProbabilityModel, ProbabilityUpdate
+from .models import FootballReversionModel
 from .discovery import FootballMarket
 
 logger = logging.getLogger(__name__)
 
-MIN_MOVE = 0.04
-MIN_REV = 0.02
-BASE_SIZE = 2.0
-MAX_SIZE = 3.0
-PROFIT_TARGET = 0.03
-STOP_LOSS = 0.03
-TIMEOUT = 180
-COOLDOWN = 60
+MIN_MOVE = 0.03         # Minimum price move required to enter
+MIN_REV = 0.015         # Minimum expected reversion required
+BASE_SIZE = 2.0         # Base trade size in USD
+MAX_SIZE = 4.0          # Max trade size in USD (up from 3.0 for high-conviction VAR)
+
+# Asymmetric risk/reward: 2:1 reward/risk
+PROFIT_TARGET = 0.04    # 4 cents profit target (2x risk)
+STOP_LOSS = 0.02        # 2 cents stop loss
+PARTIAL_EXIT_LEVEL = 0.025  # Take 50% profit at 2.5 cents, let rest run
+
+TIMEOUT_DEFAULT = 300   # 5 minutes default timeout
+TIMEOUT_LATE = 60       # 60 seconds in injury time (85+ min)
+
+COOLDOWN_WIN = 45       # 45 seconds cooldown after a win (re-enter quickly)
+COOLDOWN_LOSS = 120     # 120 seconds cooldown after a loss (more caution)
+COOLDOWN_DEFAULT = 60   # Default cooldown
 
 
 @dataclass
@@ -33,6 +41,7 @@ class ActiveScalp:
     size_usd: float
     entry_time: float
     reason: str
+    partial_exited: bool = False
 
 
 @dataclass
@@ -49,12 +58,13 @@ class TradeSignal:
 
 
 class ScalpingStrategy:
-    """Evaluates matches for scalping opportunities and manages exits."""
+    """Evaluates matches for scalping opportunities across all event types."""
 
-    def __init__(self, model: FootballProbabilityModel) -> None:
+    def __init__(self, model: FootballReversionModel) -> None:
         self._model = model
         self._active: dict[int, ActiveScalp] = {}
         self._last_trade_time: dict[int, float] = {}
+        self._last_trade_result: dict[int, str] = {}
 
     def register_entry(self, s: ActiveScalp) -> None:
         self._active[s.trade_id] = s
@@ -71,12 +81,19 @@ class ScalpingStrategy:
     def active_count(self) -> int:
         return len(self._active)
 
+    def _get_cooldown(self, fixture_id: int) -> float:
+        result = self._last_trade_result.get(fixture_id)
+        if result == "win": return COOLDOWN_WIN
+        if result == "loss": return COOLDOWN_LOSS
+        return COOLDOWN_DEFAULT
+
     async def evaluate(
         self,
         fixture_id: int,
         state: MatchState | None,
         market: FootballMarket | None,
         new_events: list[MatchEvent],
+        orderbook_imbalance: float = 1.0,  # 1.0 = balanced. >1 = buy pressure
     ) -> list[TradeSignal]:
         signals: list[TradeSignal] = []
         if not state or not market or not market.yes_token_id:
@@ -90,95 +107,118 @@ class ScalpingStrategy:
         if state.status in ("finished", "cancelled"):
             return signals
 
+        timeout = TIMEOUT_LATE if state.minute >= 85 else TIMEOUT_DEFAULT
+
         # Check exits
         for s in self.get_active(fixture_id):
             price = market.current_yes_price
-            if s.side == "SELL":
-                pnl = s.entry_price - price
-            else:
-                pnl = price - s.entry_price
-
+            pnl_per_share = (s.entry_price - price) if s.side == "SELL" else (price - s.entry_price)
             elapsed = time.time() - s.entry_time
+            exit_side = "BUY" if s.side == "SELL" else "SELL"
 
-            if pnl >= PROFIT_TARGET:
-                signals.append(TradeSignal("exit", fixture_id, s.token_id, "BUY" if s.side == "SELL" else "SELL",
-                                           price, s.size, f"profit_{pnl:.3f}", 1.0, s.trade_id))
-            elif pnl <= -STOP_LOSS:
-                signals.append(TradeSignal("exit", fixture_id, s.token_id, "BUY" if s.side == "SELL" else "SELL",
-                                           price, s.size, f"stop_{pnl:.3f}", 1.0, s.trade_id))
-            elif elapsed >= TIMEOUT:
-                signals.append(TradeSignal("exit", fixture_id, s.token_id, "BUY" if s.side == "SELL" else "SELL",
-                                           price, s.size * 0.6, f"timeout_{elapsed:.0f}s", 0.5, s.trade_id))
+            if not s.partial_exited and pnl_per_share >= PARTIAL_EXIT_LEVEL:
+                signals.append(TradeSignal(
+                    "exit", fixture_id, s.token_id, exit_side,
+                    price, s.size_usd * 0.5, f"partial_profit_{pnl_per_share:.3f}", 1.0, s.trade_id,
+                ))
+                s.partial_exited = True
+                continue
 
-        # Don't enter if already have a scalp on this fixture
+            if pnl_per_share >= PROFIT_TARGET:
+                self._last_trade_result[fixture_id] = "win"
+                signals.append(TradeSignal(
+                    "exit", fixture_id, s.token_id, exit_side,
+                    price, s.size_usd, f"profit_{pnl_per_share:.3f}", 1.0, s.trade_id,
+                ))
+            elif pnl_per_share <= -STOP_LOSS:
+                self._last_trade_result[fixture_id] = "loss"
+                signals.append(TradeSignal(
+                    "exit", fixture_id, s.token_id, exit_side,
+                    price, s.size_usd, f"stop_{pnl_per_share:.3f}", 1.0, s.trade_id,
+                ))
+            elif elapsed >= timeout:
+                self._last_trade_result[fixture_id] = "loss" if pnl_per_share < 0 else "win"
+                remaining_size = s.size_usd * (0.5 if s.partial_exited else 1.0)
+                signals.append(TradeSignal(
+                    "exit", fixture_id, s.token_id, exit_side,
+                    price, remaining_size, f"timeout_{elapsed:.0f}s", 0.5, s.trade_id,
+                ))
+
         if self.get_active(fixture_id):
             return signals
 
-        last_trade = self._last_trade_time.get(fixture_id, 0)
-        if time.time() - last_trade < COOLDOWN:
+        if time.time() - self._last_trade_time.get(fixture_id, 0) < self._get_cooldown(fixture_id):
             return signals
 
-        # Check new events for entry
+        # Check entries for ALL event types
         for ev in new_events:
-            if ev.type == "goal":
-                sig = self._goal_scalp(fixture_id, ev, market)
-                if sig:
-                    signals.append(sig)
-                    break
-            elif ev.type == "red_card":
-                sig = self._red_card_scalp(fixture_id, ev, market)
-                if sig:
-                    signals.append(sig)
-                    break
+            sig = self._evaluate_event(fixture_id, ev, market, state.minute, orderbook_imbalance)
+            if sig:
+                signals.append(sig)
+                break
 
         return signals
 
-    def _goal_scalp(self, fid: int, ev: MatchEvent, m: FootballMarket) -> TradeSignal | None:
-        pre = self._model.get_baseline(fid) or m.pre_match_price or m.current_yes_price
+    def _evaluate_event(
+        self, fid: int, ev: MatchEvent, m: FootballMarket, match_minute: int, imbalance: float
+    ) -> TradeSignal | None:
+        
+        # Get market direction (Polymarket condition is about home or away team?)
+        market_team = "home" if m.home_team.lower() in m.question.lower() else "away"
+        
+        # Pre-match or baseline price
+        pre = m.pre_match_price or 0.5
         cur = m.current_yes_price
-        update = self._model.update(cur, ev, pre)
-
+        
+        # Calculate expected % change in probability
+        impact = self._model.compute_event_impact(
+            ev.type, ev.team, market_team, "away" if market_team=="home" else "home",
+            match_minute, ev.home_score, ev.away_score
+        )
+        
+        if impact == 0:
+            return None
+            
+        target = self._model.compute_reversion_target(cur, impact)
         move = abs(cur - pre)
-        if move < MIN_MOVE or update.delta == 0:
-            return None
-
-        rev = abs(cur - update.reversion_target)
-        if rev < MIN_REV:
-            return None
-
-        if cur > update.reversion_target:
-            side = "SELL"
-        elif cur < update.reversion_target:
-            side = "BUY"
-        else:
-            return None
-
+        rev = abs(cur - target)
+        
+        # Adjust size based on event type and orderbook imbalance
         size = BASE_SIZE
-        if 75 <= ev.minute < 85:
-            size *= 1.2
-        if ev.minute >= 85:
-            size *= 0.5
+        confidence = 1.0
+        
+        if ev.type in ("goal", "own_goal"):
+            if move < MIN_MOVE or rev < MIN_REV: return None
+        elif ev.type == "var_reversal":
+            # VAR is explosive — fast entry, bigger size
+            if move < 0.02: return None
+            size *= 1.5
+            confidence = 1.2
+        elif ev.type == "penalty_awarded":
+            # Anticipation trade
+            if move < 0.02: return None
+            size *= 0.8
+        elif ev.type == "red_card":
+            if move < 0.025: return None
+            size *= 0.65
+            confidence = 0.8
+            
+        side = "SELL" if cur > target else "BUY"
+        
+        # Orderbook intelligence boost
+        if side == "BUY" and imbalance > 2.0:
+            confidence *= 1.2  # Buy pressure supports our BUY
+        elif side == "SELL" and imbalance < 0.5:
+            confidence *= 1.2  # Sell pressure supports our SELL
+            
+        # Late game scaling
+        if 75 <= match_minute < 85: size *= 1.25
+        elif match_minute >= 85: size *= 0.80
 
-        logger.info("GOAL SCALP %s: $%.2f %s @ %.3f (model: %.3f revert: %.3f) — %d'",
-                     side, size, m.yes_token_id[:10], cur, update.new_prob, update.reversion_target, ev.minute)
+        logger.info(
+            "%s SCALP %s: $%.2f @ %.3f → revert %.3f (rev=%.3f conf=%.2f) %d'",
+            ev.type.upper(), side, size, cur, target, rev, confidence, ev.minute,
+        )
 
         return TradeSignal("entry", fid, m.yes_token_id, side, cur, min(size, MAX_SIZE),
-                           f"goal_{ev.minute}m", update.confidence)
-
-    def _red_card_scalp(self, fid: int, ev: MatchEvent, m: FootballMarket) -> TradeSignal | None:
-        pre = self._model.get_baseline(fid) or m.pre_match_price or m.current_yes_price
-        cur = m.current_yes_price
-        update = self._model.update(cur, ev, pre)
-
-        move = abs(cur - pre)
-        if move < 0.03:
-            return None
-        rev = abs(cur - update.reversion_target)
-        if rev < MIN_REV:
-            return None
-
-        side = "SELL" if cur > update.reversion_target else "BUY"
-        size = BASE_SIZE * 0.6
-
-        return TradeSignal("entry", fid, m.yes_token_id, side, cur, min(size, MAX_SIZE),
-                           f"red_{ev.minute}m", update.confidence * 0.8)
+                           f"{ev.type}_{ev.minute}m", confidence)

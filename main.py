@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 from datetime import datetime
 
 from rich.console import Console
@@ -23,30 +24,36 @@ from fball_bot.config import (
     INITIAL_CAPITAL, RISK_MAX_PER_TRADE_USD, GEMINI_API_KEY,
 )
 from fball_bot.bot import FballTradingBot
-from fball_bot.database import init_database, get_tracked_matches
+from fball_bot.database import init_database, get_tracked_matches, get_daily_analytics
+from fball_bot.dashboard import Dashboard
 
 console = Console()
 
 
 def setup_logging() -> None:
+    if sys.stdout.encoding.lower() != 'utf-8':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except AttributeError:
+            pass
+            
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
-        handlers=[logging.StreamHandler(), logging.FileHandler("fball-bot.log")],
+        handlers=[logging.StreamHandler(), logging.FileHandler("fball-bot.log", encoding="utf-8")],
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def show_splash() -> None:
     console.print()
-    console.print("[bold bright_green]")
-    console.print("  ╔══════════════════════════════════════════╗")
-    console.print("  ║       FBALL-BOT v0.1                     ║")
-    console.print("  ║  World Cup Polymarket Scalping Bot       ║")
-    console.print("  ║  Gemini 3.5 Flash · PortfolioRisk        ║")
-    console.print("  ╚══════════════════════════════════════════╝")
-    console.print("[/]")
+    console.print("  ╔══════════════════════════════════════════╗", style="bold bright_green")
+    console.print("  ║       FBALL-BOT v0.1                     ║", style="bold bright_green")
+    console.print("  ║  World Cup Polymarket Scalping Bot       ║", style="bold bright_green")
+    console.print("  ║  Gemini 3.5 Flash · PortfolioRisk        ║", style="bold bright_green")
+    console.print("  ╚══════════════════════════════════════════╝", style="bold bright_green")
 
 
 async def cmd_run() -> None:
@@ -63,10 +70,27 @@ async def cmd_run() -> None:
                    f"Start: {datetime.now().isoformat()}[/]\n")
 
     bot = FballTradingBot()
+    
+    # Run the dashboard in the main thread (Rich Live requires main thread)
+    # Run the bot in a background task
+    dash = Dashboard(price_trigger=bot._price_trigger)
+    
+    async def _run_bot():
+        try:
+            await bot.run()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logging.exception("Bot crashed: %s", e)
+            
+    bot_task = asyncio.create_task(_run_bot())
+    
     try:
-        await bot.run()
+        # This blocks until interrupted
+        dash.start()
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutdown...[/]")
+        bot_task.cancel()
         await bot.stop()
 
 
@@ -103,13 +127,35 @@ async def cmd_status() -> None:
     console.print(f"\n[dim]DB: fball_bot/data/fball_bot.db[/]")
 
 
+async def cmd_report() -> None:
+    show_splash()
+    init_database()
+    stats = get_daily_analytics()
+    
+    table = Table(title="Daily Analytics (Last 24h)", border_style="cyan")
+    table.add_column("Metric", style="yellow")
+    table.add_column("Value", style="bright_white")
+    
+    table.add_row("Total Trades", str(stats["trades"]))
+    table.add_row("Winning Trades", str(stats["wins"]))
+    table.add_row("Win Rate", f"{stats['win_rate']:.1f}%")
+    
+    pnl_style = "green" if stats["pnl"] >= 0 else "red"
+    table.add_row("Total PnL", f"[{pnl_style}]${stats['pnl']:.4f}[/]")
+    
+    console.print(table)
+
+
 def main() -> None:
     setup_logging()
     parser = argparse.ArgumentParser(description="Fball-bot — autonomous World Cup scalper")
     parser.add_argument("--status", action="store_true", help="Status check")
+    parser.add_argument("--report", action="store_true", help="Show daily PnL analytics")
     args = parser.parse_args()
     if args.status:
         asyncio.run(cmd_status())
+    elif args.report:
+        asyncio.run(cmd_report())
     else:
         asyncio.run(cmd_run())
 

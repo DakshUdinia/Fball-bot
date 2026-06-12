@@ -13,8 +13,7 @@ DB_PATH = ""
 def get_db_path() -> str:
     global DB_PATH
     if not DB_PATH:
-        from .config import MONEYLINE_PATH
-        DB_PATH = str(Path(MONEYLINE_PATH).parent / "Fball-bot" / "data" / "fball_bot.db")
+        DB_PATH = str(Path(__file__).parent.parent / "data" / "fball_bot.db")
     return DB_PATH
 
 
@@ -164,3 +163,28 @@ def get_state(key: str, default: str = "") -> str:
     row = conn.execute("SELECT value FROM bot_state WHERE key=?", (key,)).fetchone()
     conn.close()
     return row[0] if row else default
+
+
+def get_daily_analytics() -> dict[str, Any]:
+    """Calculate PnL and win rate for today's trades."""
+    conn = get_connection()
+    cur = conn.cursor()
+    # Get all closed trades from the last 24 hours
+    cur.execute("""
+        SELECT pnl FROM football_trades 
+        WHERE status = 'closed' 
+        AND closed_at >= datetime('now', '-1 day')
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    
+    trades = len(rows)
+    wins = sum(1 for r in rows if r["pnl"] and r["pnl"] > 0)
+    total_pnl = sum(r["pnl"] for r in rows if r["pnl"])
+    
+    return {
+        "trades": trades,
+        "wins": wins,
+        "win_rate": (wins / trades * 100) if trades > 0 else 0.0,
+        "pnl": total_pnl,
+    }

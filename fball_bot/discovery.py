@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +14,8 @@ from typing import Any
 from .live_data import LiveMatchService, FixtureSummary
 
 logger = logging.getLogger(__name__)
+
+CACHE_FILE = "data/market_cache.json"
 
 TEAM_ALIASES: dict[str, str] = {
     "usa": "United States", "united states": "USA",
@@ -21,15 +26,10 @@ TEAM_ALIASES: dict[str, str] = {
 
 SEARCH_QUERIES = ["World Cup 2026", "World Cup", "FIFA World Cup", "FIFA 2026", "football match"]
 
-# Fallback market condition IDs for known World Cup 2026 matches on Polymarket.
-# Used when Gamma API search returns empty (API issue, rate limit, etc).
-# These are the canonical "will [Team A] beat [Team B]" binary markets.
-# Format: (condition_id, team_a, team_b)
-FALLBACK_MARKET_IDS: list[tuple[str, str, str]] = [
-    # Group stage matches — update these as the tournament progresses
-    # ("0x...", "Brazil", "Serbia"),
-    # ("0x...", "Portugal", "Ghana"),
-    # ("0x...", "Argentina", "Mexico"),
+# Pre-curated list of 2026 World Cup Group Stage condition IDs on Polymarket.
+# This prevents the bot from missing matches due to Gamma search API flakiness.
+HARDCODED_MARKETS: list[str] = [
+    # Add condition IDs here as they go live on Polymarket
 ]
 
 
@@ -76,9 +76,31 @@ class FootballMarketDiscovery:
         self._live = live_service
         self._markets: dict[int, FootballMarket] = {}
         self._last_refresh: float = 0.0
+        self._load_cache()
+
+    def _load_cache(self) -> None:
+        """Load previously discovered condition IDs from disk."""
+        self._cached_cids: set[str] = set(HARDCODED_MARKETS)
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r") as f:
+                    data = json.load(f)
+                    for cid in data.get("condition_ids", []):
+                        self._cached_cids.add(cid)
+            except Exception as e:
+                logger.debug("Failed to load market cache: %s", e)
+
+    def _save_cache(self) -> None:
+        """Save successfully mapped condition IDs to disk."""
+        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+        try:
+            with open(CACHE_FILE, "w") as f:
+                json.dump({"condition_ids": list(self._cached_cids)}, f)
+        except Exception as e:
+            logger.debug("Failed to save market cache: %s", e)
 
     async def discover_all(self, league_id: int = 1) -> list[FootballMarket]:
-        """Search Gamma API and match to fixtures. Falls back to hardcoded IDs."""
+        """Search Gamma API, check cache, and match to fixtures."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         fixtures = await self._live.get_fixtures_by_date(today, league_id)
         live = await self._live.get_live_fixtures(league_id)
@@ -86,12 +108,32 @@ class FootballMarketDiscovery:
         results: list[FootballMarket] = []
 
         seen: set[str] = set()
+        
+        # 1. First try loading cached and hardcoded IDs (Fastest & most reliable)
+        logger.debug("Checking %d cached market IDs", len(self._cached_cids))
+        for cid in list(self._cached_cids):
+            if cid in seen: continue
+            seen.add(cid)
+            try:
+                gm = await self._gamma.get_market(cid)
+                if gm:
+                    fm = self._parse_market(gm, all_fx)
+                    if fm:
+                        results.append(fm)
+                        self._markets[fm.fixture_id] = fm
+                        continue
+            except Exception:
+                pass
+            # If it failed to map or fetch, it might be stale, but we keep it in cache
+
+        # 2. Then search Gamma for any new ones
         for query in SEARCH_QUERIES:
             try:
                 gamma = await self._gamma.search_markets(query, limit=50)
             except Exception as e:
                 logger.debug("Gamma query '%s' failed: %s", query, e)
                 continue
+                
             for gm in gamma if isinstance(gamma, list) else []:
                 cid = gm.get("condition_id", "")
                 if not cid or cid in seen:
@@ -101,27 +143,13 @@ class FootballMarketDiscovery:
                 if fm:
                     results.append(fm)
                     self._markets[fm.fixture_id] = fm
+                    self._cached_cids.add(cid)
 
-        # Fallback: if Gamma returned nothing useful, try hardcoded IDs
-        if not results and FALLBACK_MARKET_IDS:
-            logger.info("Gamma search empty — trying %d fallback market IDs", len(FALLBACK_MARKET_IDS))
-            for cid, team_a, team_b in FALLBACK_MARKET_IDS:
-                if cid in seen:
-                    continue
-                seen.add(cid)
-                try:
-                    gm = await self._gamma.get_market(cid)
-                except Exception:
-                    continue
-                if not gm:
-                    continue
-                fm = self._parse_market(gm, all_fx)
-                if fm:
-                    results.append(fm)
-                    self._markets[fm.fixture_id] = fm
+        if results:
+            self._save_cache()
 
         logger.info("Discovered %d football markets", len(results))
-        self._last_refresh = __import__("time").time()
+        self._last_refresh = time.time()
         return results
 
     def _parse_market(self, gm: dict, fixtures: dict[int, FixtureSummary]) -> FootballMarket | None:
@@ -177,17 +205,26 @@ class FootballMarketDiscovery:
         return self._markets.get(fixture_id)
 
     async def refresh_prices(self, market_svc: Any) -> None:
-        for m in self._markets.values():
+        """Refresh all market prices in PARALLEL using asyncio.gather()."""
+        markets = list(self._markets.values())
+        if not markets:
+            return
+
+        async def _fetch_one(m: FootballMarket) -> None:
             try:
                 d = await market_svc.get_market(m.condition_id)
-                if isinstance(d, dict):
-                    tokens = d.get("tokens", []) or d.get("outcomes", [])
-                    for t in tokens:
-                        o = (t.get("outcome", "") or "").lower()
-                        p = float(t.get("price", t.get("current_price", "0.5")) or 0.5)
-                        if o == "yes":
-                            m.current_yes_price = p
-                        elif o == "no":
-                            m.current_no_price = p
+                if not isinstance(d, dict):
+                    return
+                tokens = d.get("tokens", []) or d.get("outcomes", [])
+                for t in tokens:
+                    o = (t.get("outcome", "") or "").lower()
+                    p = float(t.get("price", t.get("current_price", "0.5")) or 0.5)
+                    if o == "yes":
+                        m.current_yes_price = p
+                    elif o == "no":
+                        m.current_no_price = p
             except Exception as e:
-                logger.debug("Price refresh %s: %s", m.condition_id, e)
+                logger.debug("Price refresh %s: %s", m.condition_id[:12], e)
+
+        await asyncio.gather(*[_fetch_one(m) for m in markets])
+        logger.debug("Refreshed prices for %d markets (parallel)", len(markets))
