@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 import hashlib
+import time
 
 from .live_data import LiveMatchService, FixtureSummary
 from .config import MOCK_MISSING_MARKETS
@@ -149,7 +150,7 @@ class FootballMarketDiscovery:
                 continue
                 
             for gm in gamma if isinstance(gamma, list) else []:
-                cid = gm.get("condition_id", "")
+                cid = gm.get("condition_id") or gm.get("conditionId", "")
                 if not cid or cid in seen:
                     continue
                 seen.add(cid)
@@ -222,25 +223,52 @@ class FootballMarketDiscovery:
                     mapped_away = fx.away_team
                     break
 
-        tokens = gm.get("tokens", []) or gm.get("outcomes", [])
         yes_tok = no_tok = ""
         yes_pr = no_pr = 0.5
-        for t in tokens:
-            out = (t.get("outcome", "") or "").lower()
-            p = float(t.get("price", t.get("current_price", "0.5")) or 0.5)
-            if out == "yes":
-                yes_tok = t.get("token_id", "")
-                yes_pr = p
-            elif out == "no":
-                no_tok = t.get("token_id", "")
-                no_pr = p
+        
+        # Handle format with nested tokens array
+        if "tokens" in gm:
+            for t in gm["tokens"]:
+                out = (t.get("outcome", "") or "").lower()
+                p = float(t.get("price", t.get("current_price", "0.5")) or 0.5)
+                if out == "yes":
+                    yes_tok = t.get("token_id", "")
+                    yes_pr = p
+                elif out == "no":
+                    no_tok = t.get("token_id", "")
+                    no_pr = p
+        # Handle format with parallel arrays (outcomes, outcomePrices, clobTokenIds)
+        elif "outcomes" in gm:
+            try:
+                raw_outcomes = gm.get("outcomes", "[]")
+                raw_prices = gm.get("outcomePrices", "[]")
+                raw_token_ids = gm.get("clobTokenIds", "[]")
+                if isinstance(raw_outcomes, str): raw_outcomes = json.loads(raw_outcomes)
+                if isinstance(raw_prices, str): raw_prices = json.loads(raw_prices)
+                if isinstance(raw_token_ids, str): raw_token_ids = json.loads(raw_token_ids)
+                
+                outcomes = [str(o).lower() for o in raw_outcomes]
+                prices = raw_prices
+                token_ids = raw_token_ids
+                
+                for i, out in enumerate(outcomes):
+                    p = float(prices[i]) if i < len(prices) else 0.5
+                    tid = token_ids[i] if i < len(token_ids) else ""
+                    if out == "yes":
+                        yes_tok = tid
+                        yes_pr = p
+                    elif out == "no":
+                        no_tok = tid
+                        no_pr = p
+            except Exception:
+                pass
 
         match_date = ""
         if fid and fid in fixtures:
             match_date = fixtures[fid].date
 
         return FootballMarket(
-            condition_id=gm.get("condition_id", ""),
+            condition_id=gm.get("condition_id") or gm.get("conditionId", ""),
             yes_token_id=yes_tok,
             no_token_id=no_tok,
             slug=gm.get("slug", ""),
@@ -272,14 +300,31 @@ class FootballMarketDiscovery:
                 d = await market_svc.get_market(m.condition_id)
                 if not isinstance(d, dict):
                     return
-                tokens = d.get("tokens", []) or d.get("outcomes", [])
-                for t in tokens:
-                    o = (t.get("outcome", "") or "").lower()
-                    p = float(t.get("price", t.get("current_price", "0.5")) or 0.5)
-                    if o == "yes":
-                        m.current_yes_price = p
-                    elif o == "no":
-                        m.current_no_price = p
+                if "tokens" in d:
+                    for t in d["tokens"]:
+                        o = (t.get("outcome", "") or "").lower()
+                        p = float(t.get("price", t.get("current_price", "0.5")) or 0.5)
+                        if o == "yes":
+                            m.current_yes_price = p
+                        elif o == "no":
+                            m.current_no_price = p
+                elif "outcomes" in d:
+                    try:
+                        raw_outcomes = d.get("outcomes", "[]")
+                        raw_prices = d.get("outcomePrices", "[]")
+                        if isinstance(raw_outcomes, str): raw_outcomes = json.loads(raw_outcomes)
+                        if isinstance(raw_prices, str): raw_prices = json.loads(raw_prices)
+                        
+                        outcomes = [str(o).lower() for o in raw_outcomes]
+                        prices = raw_prices
+                        for i, o in enumerate(outcomes):
+                            p = float(prices[i]) if i < len(prices) else 0.5
+                            if o == "yes":
+                                m.current_yes_price = p
+                            elif o == "no":
+                                m.current_no_price = p
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.debug("Price refresh %s: %s", m.condition_id[:12], e)
 

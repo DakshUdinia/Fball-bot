@@ -52,7 +52,7 @@ class GammaClient:
         try:
             r = await self._http.get(
                 f"{self._base}/markets",
-                params={"condition_id": condition_id, "limit": "1"},
+                params={"condition_ids": condition_id, "limit": "1"},
             )
             r.raise_for_status()
             data = r.json()
@@ -75,17 +75,35 @@ class GammaClient:
     @staticmethod
     def parse_price(market: dict[str, Any], outcome: str = "YES") -> float:
         """Extract current price for YES or NO from market data."""
-        tokens = market.get("tokens", []) or market.get("outcomes", [])
-        for t in tokens:
-            o = (t.get("outcome", "") or "").lower()
-            p = t.get("price", t.get("current_price", "0.5"))
-            if isinstance(p, str):
-                try:
-                    p = float(p)
-                except (ValueError, TypeError):
-                    p = 0.5
-            if o == outcome.lower():
-                return float(p)
+        if "tokens" in market:
+            for t in market["tokens"]:
+                o = (t.get("outcome", "") or "").lower()
+                p = t.get("price", t.get("current_price", "0.5"))
+                if isinstance(p, str):
+                    try:
+                        p = float(p)
+                    except (ValueError, TypeError):
+                        p = 0.5
+                if o == outcome.lower():
+                    return float(p)
+        elif "outcomes" in market:
+            try:
+                raw_outcomes = market.get("outcomes", "[]")
+                raw_prices = market.get("outcomePrices", "[]")
+                if isinstance(raw_outcomes, str): raw_outcomes = json.loads(raw_outcomes)
+                if isinstance(raw_prices, str): raw_prices = json.loads(raw_prices)
+                
+                outcomes = [str(o).lower() for o in raw_outcomes]
+                prices = raw_prices
+                for i, o in enumerate(outcomes):
+                    if o == outcome.lower():
+                        p = prices[i] if i < len(prices) else 0.5
+                        try:
+                            return float(p)
+                        except (ValueError, TypeError):
+                            return 0.5
+            except Exception:
+                pass
         return 0.5
 
     async def get_orderbook_depth(self, token_id: str) -> float:
@@ -114,14 +132,31 @@ class GammaClient:
     def extract_tokens(market: dict[str, Any]) -> tuple[str, str]:
         """Extract (yes_token_id, no_token_id) from market data."""
         yes_tok = no_tok = ""
-        tokens = market.get("tokens", []) or market.get("outcomes", [])
-        for t in tokens:
-            o = (t.get("outcome", "") or "").lower()
-            tid = t.get("token_id", "")
-            if o == "yes":
-                yes_tok = tid
-            elif o == "no":
-                no_tok = tid
+        if "tokens" in market:
+            for t in market["tokens"]:
+                o = (t.get("outcome", "") or "").lower()
+                tid = t.get("token_id", "")
+                if o == "yes":
+                    yes_tok = tid
+                elif o == "no":
+                    no_tok = tid
+        elif "outcomes" in market:
+            try:
+                raw_outcomes = market.get("outcomes", "[]")
+                raw_token_ids = market.get("clobTokenIds", "[]")
+                if isinstance(raw_outcomes, str): raw_outcomes = json.loads(raw_outcomes)
+                if isinstance(raw_token_ids, str): raw_token_ids = json.loads(raw_token_ids)
+                
+                outcomes = [str(o).lower() for o in raw_outcomes]
+                token_ids = raw_token_ids
+                for i, o in enumerate(outcomes):
+                    tid = token_ids[i] if i < len(token_ids) else ""
+                    if o == "yes":
+                        yes_tok = tid
+                    elif o == "no":
+                        no_tok = tid
+            except Exception:
+                pass
         return yes_tok, no_tok
 
 

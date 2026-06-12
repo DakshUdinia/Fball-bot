@@ -66,14 +66,13 @@ class FixtureSummary:
 class LiveMatchService:
     """Polls API-Football v3 for live match data."""
 
-    BASE = "https://api-football-v1.p.rapidapi.com/v3"
+    BASE = "https://v3.football.api-sports.io"
 
     def __init__(self) -> None:
         from .config import FOOTBALL_API_KEY
         self._api_key = FOOTBALL_API_KEY
         self._headers = {
-            "X-RapidAPI-Key": self._api_key,
-            "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com",
+            "x-apisports-key": self._api_key,
         }
         self._known_events: dict[int, set[str]] = {}
         # BUG FIX: Store (home_team_id, away_team_id) per fixture for correct side detection
