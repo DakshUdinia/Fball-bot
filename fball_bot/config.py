@@ -13,7 +13,8 @@ load_dotenv(_env_path)
 
 # Live match data (API-Football via RapidAPI)
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "").strip()
-FOOTBALL_LEAGUE_ID = int(os.getenv("FOOTBALL_LEAGUE_ID", "1"))
+_league_str = os.getenv("FOOTBALL_LEAGUE_ID", "1")
+FOOTBALL_LEAGUE_ID = int(_league_str) if _league_str else 0
 FOOTBALL_SEASON = int(os.getenv("FOOTBALL_SEASON", "2026"))
 FOOTBALL_CHECK_INTERVAL = int(os.getenv("FOOTBALL_CHECK_INTERVAL", "15"))  # 15s (was 30s)
 MARKET_REFRESH_INTERVAL = int(os.getenv("MARKET_REFRESH_INTERVAL", "60"))  # 60s (was 300s)
@@ -43,3 +44,4 @@ RISK_ENABLE_DYNAMIC_SIZING = os.getenv("RISK_ENABLE_DYNAMIC_SIZING", "true").low
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "15"))
 MAX_CONCURRENT_MATCHES = int(os.getenv("MAX_CONCURRENT_MATCHES", "99"))  # All matches
 PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes", "on")
+MOCK_MISSING_MARKETS = os.getenv("MOCK_MISSING_MARKETS", "false").lower() in ("1", "true", "yes", "on")

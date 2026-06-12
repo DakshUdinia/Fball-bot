@@ -10,8 +10,10 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+import hashlib
 
 from .live_data import LiveMatchService, FixtureSummary
+from .config import MOCK_MISSING_MARKETS
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,31 @@ class FootballMarketDiscovery:
                     self._markets[fm.fixture_id] = fm
                     self._cached_cids.add(cid)
 
+        # 3. MOCK_MISSING_MARKETS logic for testing
+        if MOCK_MISSING_MARKETS:
+            for fxid, fx in all_fx.items():
+                if fxid not in self._markets:
+                    mock_cid = "mock_" + hashlib.md5(str(fxid).encode()).hexdigest()[:10]
+                    mock_fm = FootballMarket(
+                        condition_id=mock_cid,
+                        yes_token_id=f"{mock_cid}_YES",
+                        no_token_id=f"{mock_cid}_NO",
+                        slug=f"mock-match-{fxid}",
+                        question=f"Will {fx.home_team} beat {fx.away_team}?",
+                        home_team=fx.home_team,
+                        away_team=fx.away_team,
+                        fixture_id=fxid,
+                        match_date=fx.date,
+                        pre_match_price=0.50,
+                        current_yes_price=0.50,
+                        current_no_price=0.50,
+                        is_active=True,
+                        liquidity=1000.0,
+                    )
+                    results.append(mock_fm)
+                    self._markets[fxid] = mock_fm
+                    logger.debug("Created MOCK market for fixture %d", fxid)
+
         if results:
             self._save_cache()
 
@@ -211,6 +238,8 @@ class FootballMarketDiscovery:
             return
 
         async def _fetch_one(m: FootballMarket) -> None:
+            if m.condition_id.startswith("mock_"):
+                return
             try:
                 d = await market_svc.get_market(m.condition_id)
                 if not isinstance(d, dict):
