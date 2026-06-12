@@ -24,14 +24,19 @@ TEAM_ALIASES: dict[str, str] = {
     "england": "England", "uk": "England",
     "korea republic": "South Korea", "south korea": "South Korea",
     "ivory coast": "Côte d'Ivoire",
+    "bosnia and herzegovina": "Bosnia & Herzegovina",
+    "bosnia-herzegovina": "Bosnia & Herzegovina",
 }
 
 SEARCH_QUERIES = ["World Cup 2026", "World Cup", "FIFA World Cup", "FIFA 2026", "football match"]
 
 # Pre-curated list of 2026 World Cup Group Stage condition IDs on Polymarket.
 # This prevents the bot from missing matches due to Gamma search API flakiness.
-HARDCODED_MARKETS: list[str] = [
-    # Add condition IDs here as they go live on Polymarket
+# Optional fallback if search fails
+FALLBACK_MARKET_IDS = [
+    # Canada vs Bosnia (World Cup 2026)
+    "0x802adc7238db42d431521f625b2a367954d04ebf8836109257dd4a3b961c6108", # Canada
+    "0x3bb3f35e86949207b257f1f3288a8ceaf071638cbd10a3c9a8273b4f542d4ee0", # Bosnia
 ]
 
 
@@ -61,6 +66,13 @@ def normalize(name: str) -> str:
 
 def extract_teams(question: str) -> tuple[str, str] | None:
     q = question.replace("?", "").replace(".", "").lower()
+    
+    # Special case for "Will [Team] win on [Date]" (often used for World Cup group matches)
+    m = re.search(r"will\s+(.+?)\s+win\s+on\s+", q)
+    if m:
+        # We only get one team here. _parse_market will handle the matching if one team matches.
+        return m.group(1).strip().title(), ""
+        
     m = re.search(r"(?:between\s+)?(.+?)\s+(?:vs\.?|beat|defeat|against|v\s)\s+(.+)", q)
     if m:
         return m.group(1).strip().title(), m.group(2).strip().title()
@@ -82,7 +94,7 @@ class FootballMarketDiscovery:
 
     def _load_cache(self) -> None:
         """Load previously discovered condition IDs from disk."""
-        self._cached_cids: set[str] = set(HARDCODED_MARKETS)
+        self._cached_cids: set[str] = set(FALLBACK_MARKET_IDS)
         if os.path.exists(CACHE_FILE):
             try:
                 with open(CACHE_FILE, "r") as f:
@@ -186,13 +198,29 @@ class FootballMarketDiscovery:
             return None
 
         fid = 0
+        mapped_home = teams[0]
+        mapped_away = teams[1]
+        
         for fxid, fx in fixtures.items():
             hn = normalize(fx.home_team)
             an = normalize(fx.away_team)
-            t1, t2 = normalize(teams[0]), normalize(teams[1])
-            if (t1 == hn and t2 == an) or (t1 == an and t2 == hn):
-                fid = fxid
-                break
+            t1 = normalize(teams[0])
+            t2 = normalize(teams[1]) if teams[1] else ""
+            
+            # If both teams are provided, must match both
+            if t2:
+                if (t1 == hn and t2 == an) or (t1 == an and t2 == hn):
+                    fid = fxid
+                    mapped_home = fx.home_team
+                    mapped_away = fx.away_team
+                    break
+            # If only one team is provided (e.g. "Will Canada win..."), match if either is that team
+            elif t1:
+                if t1 == hn or t1 == an:
+                    fid = fxid
+                    mapped_home = fx.home_team
+                    mapped_away = fx.away_team
+                    break
 
         tokens = gm.get("tokens", []) or gm.get("outcomes", [])
         yes_tok = no_tok = ""
@@ -217,8 +245,8 @@ class FootballMarketDiscovery:
             no_token_id=no_tok,
             slug=gm.get("slug", ""),
             question=q,
-            home_team=teams[0],
-            away_team=teams[1],
+            home_team=mapped_home,
+            away_team=mapped_away,
             fixture_id=fid,
             match_date=match_date,
             pre_match_price=yes_pr,

@@ -44,4 +44,4 @@ RISK_ENABLE_DYNAMIC_SIZING = os.getenv("RISK_ENABLE_DYNAMIC_SIZING", "true").low
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "15"))
 MAX_CONCURRENT_MATCHES = int(os.getenv("MAX_CONCURRENT_MATCHES", "99"))  # All matches
 PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes", "on")
-MOCK_MISSING_MARKETS = os.getenv("MOCK_MISSING_MARKETS", "false").lower() in ("1", "true", "yes", "on")
+MOCK_MISSING_MARKETS = False
