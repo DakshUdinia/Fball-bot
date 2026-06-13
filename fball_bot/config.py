@@ -19,6 +19,23 @@ FOOTBALL_SEASON = int(os.getenv("FOOTBALL_SEASON", "2026"))
 FOOTBALL_CHECK_INTERVAL = int(os.getenv("FOOTBALL_CHECK_INTERVAL", "15"))  # 15s (was 30s)
 MARKET_REFRESH_INTERVAL = int(os.getenv("MARKET_REFRESH_INTERVAL", "60"))  # 60s (was 300s)
 
+# API-Football free tier hard cap. The budget guard stops issuing requests
+# (and warns) before this is exhausted so the bot is never blind mid-match.
+FOOTBALL_DAILY_REQUEST_BUDGET = int(os.getenv("FOOTBALL_DAILY_REQUEST_BUDGET", "100"))
+# Reserve a slice of the budget so a long match doesn't fully drain it.
+FOOTBALL_BUDGET_RESERVE = int(os.getenv("FOOTBALL_BUDGET_RESERVE", "5"))
+# Reuse the live-fixtures result for this many seconds so discovery and the
+# main cycle share one API-Football call instead of issuing duplicates.
+FOOTBALL_LIVE_CACHE_TTL = int(os.getenv("FOOTBALL_LIVE_CACHE_TTL", "10"))
+
+# World Cup schedule (football-data.org — free tier, low frequency).
+# Used ONLY for the fixture calendar; live events still come from API-Football.
+FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "").strip()
+FOOTBALL_DATA_COMPETITION = os.getenv("FOOTBALL_DATA_COMPETITION", "WC").strip()
+# How often to refresh the schedule from football-data.org (seconds). The WC
+# calendar barely changes, so twice a day keeps us well under its free cap.
+SCHEDULE_REFRESH_INTERVAL = int(os.getenv("SCHEDULE_REFRESH_INTERVAL", "43200"))  # 12h
+
 # Polymarket wallet (Polygon mainnet)
 WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY", "").strip()
 

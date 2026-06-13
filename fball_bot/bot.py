@@ -23,13 +23,14 @@ from .config import (
     FOOTBALL_API_KEY, FOOTBALL_CHECK_INTERVAL, FOOTBALL_LEAGUE_ID,
     MARKET_REFRESH_INTERVAL, PAPER_TRADING, MAX_CONCURRENT_MATCHES,
     POLL_INTERVAL_SECONDS, INITIAL_CAPITAL, RISK_MAX_PER_TRADE_USD,
-    WALLET_PRIVATE_KEY,
+    WALLET_PRIVATE_KEY, SCHEDULE_REFRESH_INTERVAL,
 )
 from .database import (
     init_database, upsert_match, insert_trade, close_trade,
     get_open_trades, get_tracked_matches,
 )
 from .live_data import LiveMatchService, MatchState
+from .schedule import ScheduleService
 from .discovery import FootballMarketDiscovery, FootballMarket
 from .models import FootballReversionModel
 from .scalping import ScalpingStrategy, TradeSignal, ActiveScalp
@@ -48,6 +49,7 @@ class FballTradingBot:
 
     def __init__(self) -> None:
         self._live = LiveMatchService()
+        self._schedule = ScheduleService()
         self._model = FootballReversionModel()
         self._scalping = ScalpingStrategy(self._model)
         self._risk = PortfolioRisk(
@@ -67,6 +69,7 @@ class FballTradingBot:
         self._discovery: FootballMarketDiscovery | None = None
         self._tracked_fixtures: set[int] = set()
         self._rate_limit_backoff = 0  # seconds to skip due to 429
+        self._last_schedule_refresh = 0.0
 
     async def _init_polymarket(self) -> None:
         self._gamma = GammaClient()
@@ -107,6 +110,7 @@ class FballTradingBot:
         init_database()
         await self._init_polymarket()
         await self._restore_positions()
+        await self._refresh_schedule()
         self._notifier.send("🤖 Fball-bot started")
 
         # Start price trigger in background task
@@ -125,12 +129,38 @@ class FballTradingBot:
     async def stop(self) -> None:
         self._running = False
         await self._live.close()
+        await self._schedule.close()
         if self._gamma:
             await self._gamma.close()
+
+    async def _refresh_schedule(self) -> None:
+        """Refresh the World Cup calendar from football-data.org (low frequency).
+
+        Keeps the schedule off the API-Football budget, which is reserved for
+        the latency-sensitive live event path.
+        """
+        now = time.time()
+        if self._last_schedule_refresh and (now - self._last_schedule_refresh) < SCHEDULE_REFRESH_INTERVAL:
+            return
+        try:
+            matches = await self._schedule.get_schedule()
+            self._last_schedule_refresh = now
+            today = time.strftime("%Y-%m-%d", time.gmtime())
+            todays = self._schedule.matches_on(today)
+            logger.info(
+                "🗓️ World Cup schedule: %d fixtures (%d today) — API-Football budget %d/%d left",
+                len(matches), len(todays),
+                self._live.requests_remaining_today, self._live._daily_budget,
+            )
+        except Exception as e:
+            logger.warning("Schedule refresh error: %s", e)
 
     async def _cycle(self) -> None:
         if not FOOTBALL_API_KEY:
             return
+
+        # Refresh the low-frequency World Cup schedule (football-data.org).
+        await self._refresh_schedule()
 
         # Handle 429 backoff (#2)
         if self._rate_limit_backoff > 0:
