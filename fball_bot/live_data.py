@@ -69,7 +69,12 @@ class LiveMatchService:
     BASE = "https://v3.football.api-sports.io"
 
     def __init__(self) -> None:
-        from .config import FOOTBALL_API_KEY
+        from .config import (
+            FOOTBALL_API_KEY,
+            FOOTBALL_DAILY_REQUEST_BUDGET,
+            FOOTBALL_BUDGET_RESERVE,
+            FOOTBALL_LIVE_CACHE_TTL,
+        )
         self._api_key = FOOTBALL_API_KEY
         self._headers = {
             "x-apisports-key": self._api_key,
@@ -81,14 +86,61 @@ class LiveMatchService:
         self._client = httpx.AsyncClient(timeout=15)
         self.last_status_code: int = 200
 
+        # Daily request budget guard (API-Football free tier = 100/day).
+        self._daily_budget = FOOTBALL_DAILY_REQUEST_BUDGET
+        self._budget_reserve = FOOTBALL_BUDGET_RESERVE
+        self._request_count = 0
+        self._budget_day = time.gmtime().tm_yday  # UTC day-of-year for reset
+        self._budget_warned = False
+
+        # Short-lived cache so discovery + the main cycle share one live call.
+        self._live_cache_ttl = FOOTBALL_LIVE_CACHE_TTL
+        self._live_cache: list[FixtureSummary] = []
+        self._live_cache_key: int | None = None
+        self._live_cache_at: float = 0.0
+
     async def close(self) -> None:
         await self._client.aclose()
+
+    @property
+    def requests_used_today(self) -> int:
+        return self._request_count
+
+    @property
+    def requests_remaining_today(self) -> int:
+        return max(0, self._daily_budget - self._request_count)
+
+    def _roll_budget_day(self) -> None:
+        """Reset the counter when the UTC day changes."""
+        today = time.gmtime().tm_yday
+        if today != self._budget_day:
+            self._budget_day = today
+            self._request_count = 0
+            self._budget_warned = False
+            logger.info("API-Football daily budget reset (%d/day)", self._daily_budget)
+
+    def _budget_available(self) -> bool:
+        """True if we may still spend a request without breaching the reserve."""
+        self._roll_budget_day()
+        if self._request_count >= (self._daily_budget - self._budget_reserve):
+            if not self._budget_warned:
+                logger.warning(
+                    "API-Football daily budget nearly exhausted (%d/%d used) — "
+                    "pausing further requests until UTC reset",
+                    self._request_count, self._daily_budget,
+                )
+                self._budget_warned = True
+            return False
+        return True
 
     async def _get(self, path: str, params: dict[str, Any]) -> dict | None:
         if not self._api_key:
             logger.warning("FOOTBALL_API_KEY not set")
             return None
+        if not self._budget_available():
+            return None
         try:
+            self._request_count += 1
             r = await self._client.get(f"{self.BASE}{path}", headers=self._headers, params=params)
             self.last_status_code = r.status_code
             r.raise_for_status()
@@ -98,7 +150,19 @@ class LiveMatchService:
             return None
 
     async def get_live_fixtures(self, league_id: int | None = None) -> list[FixtureSummary]:
-        """Get all currently live fixtures."""
+        """Get all currently live fixtures.
+
+        Cached for FOOTBALL_LIVE_CACHE_TTL seconds so that discovery and the
+        main poll cycle reuse a single API-Football call instead of each
+        issuing their own every cycle (the main driver of budget exhaustion).
+        """
+        now = time.time()
+        if (
+            self._live_cache_key == league_id
+            and (now - self._live_cache_at) < self._live_cache_ttl
+        ):
+            return self._live_cache
+
         data = await self._get("/fixtures", {"live": "all"})
         fixtures = []
         for item in (data or {}).get("response", []):
@@ -144,6 +208,9 @@ class LiveMatchService:
                 home_score=summary.home_score,
                 away_score=summary.away_score,
             )
+        self._live_cache = fixtures
+        self._live_cache_key = league_id
+        self._live_cache_at = time.time()
         return fixtures
 
     def get_match_state(self, fixture_id: int) -> MatchState | None:
