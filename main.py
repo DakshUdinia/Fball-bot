@@ -86,8 +86,8 @@ async def cmd_run() -> None:
     bot_task = asyncio.create_task(_run_bot())
     
     try:
-        # This blocks until interrupted
-        dash.start()
+        # This blocks until interrupted, but yields to the event loop
+        await dash.start()
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutdown...[/]")
         bot_task.cancel()

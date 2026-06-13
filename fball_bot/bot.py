@@ -208,7 +208,7 @@ class FballTradingBot:
                             "price_before": market.current_yes_price,
                             "price_now": market.current_yes_price,
                             "side": "HOLD",
-                            "size": 2.0,
+                            "size": 3.0,
                             "baseline": market.current_yes_price,
                         })
                         logger.info("🧠 Pre-scout fired for %s vs %s",
@@ -318,7 +318,7 @@ class FballTradingBot:
                 "price_before": spike.price_before,
                 "price_now": spike.price_now,
                 "side": trade_side,
-                "size": 2.0,
+                "size": 3.0,
                 "baseline": pre_match,
             })
 
@@ -330,7 +330,7 @@ class FballTradingBot:
             token_id=market.yes_token_id,
             side=trade_side,
             price=spike.price_now,
-            size=2.0,
+            size=3.0,
             reason=f"price_spike_{spike.direction}_{spike.change_pct:.0f}pct",
             confidence=update.confidence,
         )

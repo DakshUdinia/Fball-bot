@@ -35,21 +35,29 @@ class Dashboard:
         m, s = divmod(uptime, 60)
         h, m = divmod(m, 60)
         
-        ws_status = "🟢 WS LIVE" if self.price_trigger and self.price_trigger.is_connected else "🔴 WS OFF"
+        if not self.price_trigger:
+            ws_status = "🔴 OFFLINE"
+        elif self.price_trigger.is_connected:
+            ws_status = "🟢 DATA LIVE"
+        elif not self.price_trigger._subscriptions:
+            ws_status = "🟡 WAITING"
+        else:
+            ws_status = "🔴 OFFLINE"
         ws_markets = self.price_trigger.connected_markets if self.price_trigger else 0
         
         header_text = Text(f" Fball-bot | Uptime: {h:02d}:{m:02d}:{s:02d} | {ws_status} ({ws_markets} markets) ", style="bold white on blue", justify="center")
         layout["header"].update(Panel(header_text))
 
         # Live Matches
-        matches = get_tracked_matches("live")
+        matches = get_tracked_matches()
+        live_matches = [m for m in matches if m["status"] in ("1H", "2H", "HT", "ET", "P", "live", "LIVE")]
         match_table = Table(show_header=True, header_style="bold magenta", expand=True)
         match_table.add_column("Minute")
         match_table.add_column("Match")
         match_table.add_column("Score")
         match_table.add_column("Price (YES)")
 
-        for m_row in matches:
+        for m_row in live_matches:
             match_table.add_row(
                 f"{m_row['minute']}'",
                 f"{m_row['home_team']} vs {m_row['away_team']}",
@@ -92,9 +100,9 @@ class Dashboard:
 
         return layout
 
-    def start(self) -> None:
-        """Note: Live dashboard must be run in the main thread."""
+    async def start(self) -> None:
+        import asyncio
         with Live(self.generate_layout(), refresh_per_second=2) as live:
             while True:
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
                 live.update(self.generate_layout())

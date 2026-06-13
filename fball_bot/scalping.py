@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 MIN_MOVE = 0.03         # Minimum price move required to enter
 MIN_REV = 0.015         # Minimum expected reversion required
-BASE_SIZE = 2.0         # Base trade size in USD
-MAX_SIZE = 4.0          # Max trade size in USD (up from 3.0 for high-conviction VAR)
+BASE_SIZE = 3.0         # Base trade size in USD
+MAX_SIZE = 5.0          # Max trade size in USD
 
 # Asymmetric risk/reward: 2:1 reward/risk
 PROFIT_TARGET = 0.04    # 4 cents profit target (2x risk)

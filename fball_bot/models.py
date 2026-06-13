@@ -23,6 +23,32 @@ class FootballReversionModel:
         self.base_home_win_prob = 0.45
         self.base_away_win_prob = 0.30
         self.base_draw_prob = 0.25
+        self._baselines: dict[int, float] = {}
+
+    def get_baseline(self, fixture_id: int) -> float | None:
+        return self._baselines.get(fixture_id)
+
+    def set_baseline(self, fixture_id: int, price: float) -> None:
+        self._baselines[fixture_id] = price
+
+    def update(self, current: float, event: Any, pre_match: float) -> Any:
+        # Reconstruct the expected return object for price spikes
+        from dataclasses import dataclass
+        @dataclass
+        class ModelUpdate:
+            scalp_direction: str
+            reversion_target: float
+            confidence: float
+            
+        # Fast path computation for spike reversions
+        # Spikes generally revert unless backed by a major event
+        # If fake_event team is "home" (meaning YES price spiked UP)
+        if event.team == "home":
+            target = current - 0.05  # Expect 5c reversion
+            return ModelUpdate("SELL", max(0.01, target), 1.0)
+        else:
+            target = current + 0.05  # Expect 5c reversion
+            return ModelUpdate("BUY", min(0.99, target), 1.0)
 
     def compute_event_impact(
         self,

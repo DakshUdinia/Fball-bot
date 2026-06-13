@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fball-bot | Live Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="background-mesh">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <div class="dashboard-container">
+        <!-- Header / Stats -->
+        <header class="glass-panel">
+            <div class="header-title">
+                <h1>Fball-bot Dashboard</h1>
+                <div class="status-indicator">
+                    <span class="dot" id="connection-dot"></span>
+                    <span id="connection-status">Connecting...</span>
+                </div>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <span class="stat-label">Today's PnL</span>
+                    <h2 class="stat-value" id="stat-pnl">$0.00</h2>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Win Rate</span>
+                    <h2 class="stat-value" id="stat-winrate">0%</h2>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Today's Trades</span>
+                    <h2 class="stat-value" id="stat-trades">0</h2>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">All-time PnL</span>
+                    <h2 class="stat-value highlight" id="stat-alltime">$0.00</h2>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <!-- Left Column: Live Matches -->
+            <section class="glass-panel col-matches">
+                <div class="panel-header">
+                    <h2>Live Matches</h2>
+                    <span class="badge" id="matches-count">0</span>
+                </div>
+                <div class="table-container">
+                    <table id="matches-table">
+                        <thead>
+                            <tr>
+                                <th>Min</th>
+                                <th>Match</th>
+                                <th>Score</th>
+                                <th>Price (YES)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="matches-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Right Column: Trades -->
+            <section class="glass-panel col-trades">
+                <div class="panel-header">
+                    <h2>Open Positions</h2>
+                    <span class="badge badge-accent" id="open-trades-count">0</span>
+                </div>
+                <div class="table-container table-compact">
+                    <table id="open-trades-table">
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th>Size</th>
+                                <th>Entry</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="open-trades-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="panel-header" style="margin-top: 1.5rem;">
+                    <h2>Trade History</h2>
+                </div>
+                <div class="table-container table-compact">
+                    <table id="history-trades-table">
+                        <thead>
+                            <tr>
+                                <th>Side</th>
+                                <th>Result</th>
+                                <th>PnL</th>
+                                <th>Closed At</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-trades-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

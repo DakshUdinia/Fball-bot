@@ -114,14 +114,14 @@ class GammaClient:
         """
         try:
             r = await self._http.get(
-                "https://clob.polymarket.com/books",
+                "https://clob.polymarket.com/book",
                 params={"token_id": token_id},
             )
             r.raise_for_status()
             data = r.json()
-            bids = sum(float(b.get("sz", 0)) * float(b.get("px", 0))
+            bids = sum(float(b.get("size", 0)) * float(b.get("price", 0))
                        for b in data.get("bids", []))
-            asks = sum(float(b.get("sz", 0)) * float(b.get("px", 0))
+            asks = sum(float(b.get("size", 0)) * float(b.get("price", 0))
                        for b in data.get("asks", []))
             return bids + asks
         except Exception as e:

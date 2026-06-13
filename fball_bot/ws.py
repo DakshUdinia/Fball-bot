@@ -42,8 +42,8 @@ class PriceSpike:
 
 
 class PriceTrigger:
-    WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/l2"
-    REST_URL = "https://clob.polymarket.com/books"
+    WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    REST_URL = "https://clob.polymarket.com/book"
 
     MIN_SPIKE_THRESHOLD_PCT = 2.0  # Absolute minimum 2% move
     SPIKE_WINDOW_SECONDS = 10.0
@@ -57,7 +57,7 @@ class PriceTrigger:
         self._running = False
         self._reconnect_delay = 1.0
         self._last_activity: float = time.time()
-        self._use_websocket = True
+        self._use_websocket = False
         self._rest_client: Any = None
 
     def on_spike(self, callback: Callable) -> None:
