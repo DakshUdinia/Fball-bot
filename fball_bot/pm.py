@@ -236,11 +236,15 @@ class CLOBTrader:
         try:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
 
+            # Slippage protection (5%)
+            limit_price = price * 1.05 if side.upper() == "BUY" else price * 0.95
+            limit_price = max(0.01, min(0.99, limit_price))
+
             args = MarketOrderArgs(
                 token_id=token_id,
                 side=side.upper(),
                 amount=str(amount),
-                price=str(price),
+                price=str(round(limit_price, 3)),
                 order_type=OrderType.FOK,
             )
             signed = self._clob.create_market_order(args)

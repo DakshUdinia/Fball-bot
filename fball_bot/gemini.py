@@ -148,7 +148,9 @@ class GeminiScout:
 
     def get_reason(self, fixture_id: int) -> str:
         c = self._cache.get(fixture_id)
-        return c.get("reason", "") if c else ""
+        if not c or time.time() - c["ts"] > 300:
+            return ""
+        return c.get("reason", "")
 
     def flush(self, fixture_id: int | None = None) -> None:
         if fixture_id:

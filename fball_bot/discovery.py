@@ -31,15 +31,7 @@ TEAM_ALIASES: dict[str, str] = {
 
 SEARCH_QUERIES = ["World Cup 2026", "World Cup", "FIFA World Cup", "FIFA 2026", "football match"]
 
-# Pre-curated list of 2026 World Cup Group Stage condition IDs on Polymarket.
-# This prevents the bot from missing matches due to Gamma search API flakiness.
-# Optional fallback if search fails
-FALLBACK_MARKET_IDS = [
-    # Canada vs Bosnia (World Cup 2026)
-    "0x802adc7238db42d431521f625b2a367954d04ebf8836109257dd4a3b961c6108", # Canada
-    "0x3bb3f35e86949207b257f1f3288a8ceaf071638cbd10a3c9a8273b4f542d4ee0", # Bosnia
-]
-
+# Fallback IDs removed to prevent fragile hardcoded market mapping
 
 @dataclass
 class FootballMarket:
@@ -95,7 +87,7 @@ class FootballMarketDiscovery:
 
     def _load_cache(self) -> None:
         """Load previously discovered condition IDs from disk."""
-        self._cached_cids: set[str] = set(FALLBACK_MARKET_IDS)
+        self._cached_cids: set[str] = set()
         if os.path.exists(CACHE_FILE):
             try:
                 with open(CACHE_FILE, "r") as f:

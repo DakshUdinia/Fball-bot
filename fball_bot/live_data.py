@@ -98,6 +98,9 @@ class LiveMatchService:
         self._live_cache: list[FixtureSummary] = []
         self._live_cache_key: int | None = None
         self._live_cache_at: float = 0.0
+        
+        self._consecutive_errors = 0
+        self._circuit_breaker_until = 0.0
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -139,14 +142,29 @@ class LiveMatchService:
             return None
         if not self._budget_available():
             return None
+            
+        now = time.time()
+        if now < self._circuit_breaker_until:
+            return None
+            
         try:
             self._request_count += 1
             r = await self._client.get(f"{self.BASE}{path}", headers=self._headers, params=params)
             self.last_status_code = r.status_code
             r.raise_for_status()
+            
+            # Reset circuit breaker on success
+            self._consecutive_errors = 0
+            
             return r.json()
         except Exception as e:
-            logger.debug("API-Football error %s: %s", path, e)
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= 3:
+                logger.error("API-Football circuit breaker opened (3 consecutive errors) for 60s")
+                self._circuit_breaker_until = now + 60.0
+                self._consecutive_errors = 0
+            else:
+                logger.debug("API-Football error %s: %s", path, e)
             return None
 
     async def get_live_fixtures(self, league_id: int | None = None) -> list[FixtureSummary]:

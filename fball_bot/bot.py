@@ -27,7 +27,7 @@ from .config import (
 )
 from .database import (
     init_database, upsert_match, insert_trade, close_trade,
-    get_open_trades, get_tracked_matches,
+    get_open_trades, get_tracked_matches, update_trade_size,
 )
 from .live_data import LiveMatchService, MatchState
 from .schedule import ScheduleService
@@ -223,8 +223,7 @@ class FballTradingBot:
             return
 
         # Process ALL live matches — speed edge applies everywhere
-        for summary in live:
-            await self._process_match(summary)
+        await asyncio.gather(*[self._process_match(summary) for summary in live])
 
         # Dedicated exit management — runs EVERY cycle
         await self._manage_exits()
@@ -249,6 +248,11 @@ class FballTradingBot:
         ok, reason = self._risk.can_trade()
         if not ok:
             logger.debug("Spike skipped (risk): %s", reason)
+            return
+
+        # Prevent duplicate trades
+        if self._scalping.get_active(fid):
+            logger.debug("Spike skipped: already active trade for fixture %d", fid)
             return
 
         # Get market info
@@ -528,13 +532,17 @@ class FballTradingBot:
                 scalp = self._scalping.register_exit(sig.trade_id)
             if not scalp:
                 return
-            # Fix: PnL = qty_shares * price_move (not dollar_amount * price_move)
             qty = sig.size / scalp.entry_price if scalp.entry_price > 0 else sig.size
             if scalp.side == "SELL":
                 pnl = qty * (scalp.entry_price - sig.price)
             else:
                 pnl = qty * (sig.price - scalp.entry_price)
-            close_trade(sig.trade_id, sig.price, pnl, sig.reason)
+            
+            if is_partial:
+                update_trade_size(sig.trade_id, scalp.size_usd, pnl, sig.reason)
+            else:
+                close_trade(sig.trade_id, sig.price, pnl, sig.reason)
+                
             info = self._risk.record_trade(pnl, scalp.entry_price)
 
             match_str = ""

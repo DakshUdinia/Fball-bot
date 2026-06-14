@@ -144,9 +144,20 @@ def close_trade(trade_id: int, exit_price: float, pnl: float, reason: str) -> No
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        UPDATE football_trades SET exit_price=?, pnl=?, status='closed', exit_reason=?, closed_at=datetime('now')
+        UPDATE football_trades SET exit_price=?, pnl=COALESCE(pnl, 0) + ?, status='closed', exit_reason=?, closed_at=datetime('now')
         WHERE id=?
     """, (exit_price, pnl, reason, trade_id))
+    conn.commit()
+    conn.close()
+
+
+def update_trade_size(trade_id: int, new_size: float, added_pnl: float, reason: str) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE football_trades SET size_usd=?, pnl=COALESCE(pnl, 0) + ?, exit_reason=?
+        WHERE id=?
+    """, (new_size, added_pnl, reason, trade_id))
     conn.commit()
     conn.close()
 
